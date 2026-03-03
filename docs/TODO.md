@@ -10,19 +10,16 @@
 ### [x] ~~Tool Use Loop (multi-turn agent iteration)~~
 - Implemented: `agent_loop.c` ReAct loop with `llm_chat_tools()`, max 10 iterations, non-streaming JSON parsing
 
-### [ ] Memory Write via Tool Use (agent-driven memory persistence)
-- **openclaw**: Agent uses standard `write`/`edit` tools to write `MEMORY.md` and `memory/YYYY-MM-DD.md`; system prompt instructs agent to persist important information; pre-compaction memory flush triggers a silent agent turn to save durable memories before context window limit
-- **MimiClaw**: `memory_write_long_term` and `memory_append_today` exist but are only called from CLI; agent loop never writes memory
-- **Scope**: Expose `memory_write` and `memory_append_today` as tool_use tools for Claude; add system prompt guidance on when to persist memory; optionally add pre-compaction flush (trigger memory save when session history nears `MIMI_SESSION_MAX_MSGS`)
-- **Depends on**: Tool Use Loop
+### [x] ~~Memory Write via Tool Use (agent-driven memory persistence)~~
+- Implemented: `write_file` and `edit_file` tools allow the agent to write to `/spiffs/memory/MEMORY.md` and daily notes; system prompt instructs agent when to persist memory
 
 ### [x] ~~Tool Registry + web_search Tool~~
 - Implemented: `tools/tool_registry.c` — tool registration, JSON schema builder, dispatch by name
 - Implemented: `tools/tool_web_search.c` — Brave Search API via HTTPS (direct + proxy support)
 
-### [ ] More Built-in Tools
-- **nanobot built-in tools** not yet ported: `read_file`, `write_file`, `edit_file`, `list_dir`, `message`
-- **Recommendation**: Reasonable tool subset for ESP32: `read_file`, `write_file`, `list_dir` (SPIFFS), `message`, `memory_write`
+### [x] ~~More Built-in Tools~~
+- Implemented: `read_file`, `write_file`, `edit_file`, `list_dir` in `tools/tool_files.c`; `get_current_time` in `tools/tool_get_time.c`
+- All 9 tools registered in `tools/tool_registry.c`
 
 ### [ ] Subagent / Spawn Background Tasks
 - **nanobot**: `subagent.py` — SubagentManager spawns independent agent instances with isolated tool sets and system prompts, announces results back to main agent via system channel
@@ -52,10 +49,10 @@
 - **MimiClaw**: Only processes `message.text`, ignores all media messages
 - **Recommendation**: Images can be base64-encoded for Claude Vision; voice requires Whisper API (extra HTTPS request)
 
-### [ ] Skills System (pluggable capabilities)
-- **nanobot**: `agent/skills.py` — loads skills from SKILL.md files, supports always-loaded and on-demand, frontmatter metadata, requirements checking
-- **MimiClaw**: Not implemented
-- **Recommendation**: Simplified version: store SKILL.md files on SPIFFS, load into system prompt via context_builder
+### [x] ~~Skills System (pluggable capabilities)~~
+- Implemented: `skills/skill_loader.c` — loads .md files from `/spiffs/skills/`, injects skill summaries into system prompt via `context_builder`
+- Built-in skills (weather, daily_briefing, skill_creator) seeded to SPIFFS on first boot
+- CLI commands: `skill_list`, `skill_show`, `skill_search`
 
 ### [ ] Full Bootstrap File Alignment
 - **nanobot**: Loads `AGENTS.md`, `SOUL.md`, `USER.md`, `TOOLS.md`, `IDENTITY.md` (5 files)
@@ -84,15 +81,15 @@
 
 ## P2 — Advanced Features
 
-### [ ] Cron Scheduled Task Service
-- **nanobot**: `cron/service.py` — full cron scheduler supporting at/every/cron expressions, persistent storage, timed agent triggers
-- **MimiClaw**: Not implemented
-- **Recommendation**: Use FreeRTOS timer for simplified version, support "every N minutes" only
+### [x] ~~Cron Scheduled Task Service~~
+- Implemented: `cron/cron_service.c` — FreeRTOS task, `every` (recurring) + `at` (one-shot) schedule types
+- Jobs persisted to `/spiffs/cron.json`, survive reboots
+- Agent tools: `cron_add`, `cron_list`, `cron_remove`; CLI: `cron_start`
 
-### [ ] Heartbeat Service
-- **nanobot**: `heartbeat/service.py` — reads HEARTBEAT.md every 30 minutes, triggers agent if tasks are found
-- **MimiClaw**: Not implemented
-- **Recommendation**: Simple FreeRTOS timer that periodically checks HEARTBEAT.md
+### [x] ~~Heartbeat Service~~
+- Implemented: `heartbeat/heartbeat.c` — FreeRTOS timer fires every 30 minutes
+- Reads `/spiffs/HEARTBEAT.md`, triggers agent turn if actionable tasks found (skips empty lines, headers, completed `[x]` checkboxes)
+- CLI: `heartbeat_trigger` for manual check
 
 ### [ ] Multi-LLM Provider Support
 - **nanobot**: `providers/litellm_provider.py` — supports OpenRouter, Anthropic, OpenAI, Gemini, DeepSeek, Groq, Zhipu, vLLM via LiteLLM
@@ -106,7 +103,8 @@
 
 ### [x] ~~Build-time Config File + Runtime NVS Override~~
 - Implemented: `mimi_secrets.h` as build-time defaults, NVS as runtime override via CLI
-- Two-layer config: build-time secrets → NVS fallback, CLI commands to set/show/reset
+- Two-layer config: NVS priority → build-time fallback; CLI: `set_wifi`, `set_api_key`, `set_model`, `set_proxy`, etc.
+- `config_show` displays effective values with source (NVS or build); `config_reset` wipes NVS
 
 ### [ ] WebSocket Gateway Protocol Enhancement
 - **nanobot**: Gateway port 18790 + richer protocol
@@ -139,17 +137,24 @@
 - [x] Message Bus (inbound/outbound queues)
 - [x] Agent Loop with ReAct tool use (multi-turn, max 10 iterations)
 - [x] Claude API (Anthropic Messages API, non-streaming, tool_use protocol)
+- [x] OpenAI-compatible API support (`set_model_provider openai`)
 - [x] Tool Registry + web_search tool (Brave Search API)
-- [x] Context Builder (system prompt + bootstrap files + memory + tool guidance)
+- [x] Built-in tools: `get_current_time`, `read_file`, `write_file`, `edit_file`, `list_dir`
+- [x] Cron tools: `cron_add`, `cron_list`, `cron_remove` — agent-schedulable recurring/one-shot tasks
+- [x] Memory Write via Tool Use (agent uses `write_file`/`edit_file` to persist MEMORY.md)
+- [x] Context Builder (system prompt + bootstrap files + memory + skill summaries + tool guidance)
 - [x] Memory Store (MEMORY.md + daily notes)
 - [x] Session Manager (JSONL per chat_id, ring buffer history)
 - [x] WebSocket Gateway (port 18789, JSON protocol)
-- [x] Serial CLI (esp_console, debug/maintenance commands)
-- [x] HTTP CONNECT Proxy (Telegram + Claude API + Brave Search via proxy tunnel)
+- [x] Serial CLI (esp_console, full config + debug/maintenance commands)
+- [x] HTTP CONNECT Proxy + SOCKS5 (Telegram + LLM API + Brave Search via proxy tunnel)
 - [x] OTA Update
-- [x] WiFi Manager (build-time credentials, exponential backoff)
+- [x] WiFi Manager (build-time credentials + NVS override, exponential backoff)
 - [x] SPIFFS storage
 - [x] Build-time config (`mimi_secrets.h`) + runtime NVS override via CLI
+- [x] Skills System (SPIFFS .md files, injected into system prompt, CLI management)
+- [x] Cron Scheduler (FreeRTOS task, every/at jobs, persisted to cron.json)
+- [x] Heartbeat Service (FreeRTOS timer, 30-min check of HEARTBEAT.md)
 
 ---
 
@@ -157,13 +162,15 @@
 
 ```
 1. [done] Tool Use Loop + Tool Registry + web_search
-2. Memory Write via Tool Use         <- makes the agent actually remember
-3. Built-in Tools (read_file, write_file, message)
-4. Telegram Allowlist (allow_from)   <- security essential
-5. Bootstrap File Completion (AGENTS.md, TOOLS.md)
-6. Subagent (simplified)
-7. Telegram Markdown -> HTML
-8. Media Handling
-9. Cron / Heartbeat
-10. Other enhancements
+2. [done] Memory Write via Tool Use (write_file/edit_file tools)
+3. [done] Built-in Tools (read_file, write_file, edit_file, list_dir, get_current_time)
+4. [done] Cron Scheduler + Heartbeat Service
+5. [done] Skills System
+6. [done] Runtime NVS Config (set_wifi, set_api_key, etc.)
+7. Telegram Allowlist (allow_from)   <- security essential
+8. Bootstrap File Completion (AGENTS.md, TOOLS.md)
+9. Telegram Markdown -> HTML
+10. Subagent (simplified)
+11. Media Handling
+12. Other enhancements
 ```

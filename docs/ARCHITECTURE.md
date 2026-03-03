@@ -114,19 +114,21 @@ main/
 │
 ├── llm/
 │   ├── llm_proxy.h         llm_chat() + llm_chat_tools() API, tool_use types
-│   └── llm_proxy.c         Anthropic Messages API (non-streaming), tool_use parsing
+│   └── llm_proxy.c         Anthropic/OpenAI API (non-streaming), tool_use parsing
 │
 ├── agent/
 │   ├── agent_loop.h        Agent task init/start
 │   ├── agent_loop.c        ReAct loop: LLM call → tool execution → repeat
 │   ├── context_builder.h   System prompt + messages builder API
-│   └── context_builder.c   Reads bootstrap files + memory + tool guidance
+│   └── context_builder.c   Reads bootstrap files + memory + skill summaries + tool guidance
 │
 ├── tools/
 │   ├── tool_registry.h     Tool definition struct, register/dispatch API
 │   ├── tool_registry.c     Tool registration, JSON schema builder, dispatch by name
-│   ├── tool_web_search.h   Web search tool API
-│   └── tool_web_search.c   Brave Search API via HTTPS (direct + proxy)
+│   ├── tool_web_search.h/c Brave Search API via HTTPS (direct + proxy)
+│   ├── tool_get_time.h/c   NTP-synchronized current time
+│   ├── tool_files.h/c      SPIFFS file I/O (read_file, write_file, edit_file, list_dir)
+│   └── tool_cron.h/c       Cron job management (cron_add, cron_list, cron_remove)
 │
 ├── memory/
 │   ├── memory_store.h      Long-term + daily memory API
@@ -144,7 +146,19 @@ main/
 │
 ├── cli/
 │   ├── serial_cli.h        CLI init API
-│   └── serial_cli.c        esp_console REPL with debug/maintenance commands
+│   └── serial_cli.c        esp_console REPL with config + debug + maintenance commands
+│
+├── cron/
+│   ├── cron_service.h      Cron scheduler API (init/start/add/remove/list)
+│   └── cron_service.c      Persistent job store (cron.json), FreeRTOS task, inbound inject
+│
+├── heartbeat/
+│   ├── heartbeat.h         Heartbeat API (init/start/trigger)
+│   └── heartbeat.c         FreeRTOS timer (30 min), reads HEARTBEAT.md, triggers agent
+│
+├── skills/
+│   ├── skill_loader.h      Skill loader API (init/build_summary)
+│   └── skill_loader.c      Loads .md files from /spiffs/skills/, injects into system prompt
 │
 └── ota/
     ├── ota_manager.h       OTA update API
@@ -158,11 +172,13 @@ main/
 | Task               | Core | Priority | Stack  | Description                          |
 |--------------------|------|----------|--------|--------------------------------------|
 | `tg_poll`          | 0    | 5        | 12 KB  | Telegram long polling (30s timeout)  |
-| `agent_loop`       | 1    | 6        | 12 KB  | Message processing + Claude API call |
-| `outbound`         | 0    | 5        | 8 KB   | Route responses to Telegram / WS     |
+| `agent_loop`       | 1    | 6        | 24 KB  | Message processing + LLM API call    |
+| `outbound`         | 0    | 5        | 12 KB  | Route responses to Telegram / WS     |
+| `cron`             | any  | 4        | 4 KB   | Polls due cron jobs every 60s        |
 | `serial_cli`       | 0    | 3        | 4 KB   | USB serial console REPL              |
 | httpd (internal)   | 0    | 5        | —      | WebSocket server (esp_http_server)   |
 | wifi_event (IDF)   | 0    | 8        | —      | WiFi event handling (ESP-IDF)        |
+| heartbeat (timer)  | —    | —        | —      | FreeRTOS timer, fires every 30 min   |
 
 **Core allocation strategy**: Core 0 handles I/O (network, serial, WiFi). Core 1 is dedicated to the agent loop (CPU-bound JSON building + waiting on HTTPS).
 
@@ -213,6 +229,12 @@ SPIFFS is a flat filesystem — no real directories. Files use path-like names.
 /spiffs/memory/MEMORY.md        Long-term persistent memory
 /spiffs/memory/2026-02-05.md    Daily notes (one file per day)
 /spiffs/sessions/tg_12345.jsonl Session history (one file per Telegram chat)
+/spiffs/cron.json               Persisted cron job definitions
+/spiffs/HEARTBEAT.md            Pending tasks checked every 30 minutes
+/spiffs/skills/weather.md       Built-in skill (loaded on first boot)
+/spiffs/skills/daily_briefing.md Built-in skill
+/spiffs/skills/skill_creator.md  Built-in skill
+/spiffs/skills/<custom>.md      Custom skills added by the agent or user
 ```
 
 Session files are JSONL (one JSON object per line):
@@ -225,20 +247,30 @@ Session files are JSONL (one JSON object per line):
 
 ## Configuration
 
-All configuration is done exclusively through `mimi_secrets.h` at build time. There is no runtime configuration — changing any setting requires `idf.py fullclean && idf.py build`.
+MimiClaw uses a **two-layer configuration system**:
 
-| Define                       | Description                             |
-|------------------------------|-----------------------------------------|
-| `MIMI_SECRET_WIFI_SSID`     | WiFi SSID                               |
-| `MIMI_SECRET_WIFI_PASS`     | WiFi password                           |
-| `MIMI_SECRET_TG_TOKEN`      | Telegram Bot API token                  |
-| `MIMI_SECRET_API_KEY`       | Anthropic API key                       |
-| `MIMI_SECRET_MODEL`         | Model ID (default: claude-opus-4-6)     |
-| `MIMI_SECRET_PROXY_HOST`    | HTTP proxy hostname/IP (optional)       |
-| `MIMI_SECRET_PROXY_PORT`    | HTTP proxy port (optional)              |
-| `MIMI_SECRET_SEARCH_KEY`    | Brave Search API key (optional)         |
+1. **Build-time secrets** (`mimi_secrets.h`): highest priority, baked into firmware
+2. **Runtime NVS overrides**: set via CLI commands (`set_wifi`, `set_api_key`, etc.), survive reboots
 
-NVS is still initialized (required by ESP-IDF WiFi internals) but is not used for application configuration.
+At runtime, each subsystem reads NVS first; if no NVS key is set, it falls back to the build-time value. Use `config_show` to inspect effective values and `config_reset` to wipe all NVS overrides back to build-time defaults.
+
+**Build-time defines** (`mimi_secrets.h`):
+
+| Define                          | Description                             |
+|---------------------------------|-----------------------------------------|
+| `MIMI_SECRET_WIFI_SSID`        | WiFi SSID                               |
+| `MIMI_SECRET_WIFI_PASS`        | WiFi password                           |
+| `MIMI_SECRET_TG_TOKEN`         | Telegram Bot API token                  |
+| `MIMI_SECRET_API_KEY`          | LLM API key (Anthropic or OpenAI)       |
+| `MIMI_SECRET_MODEL`            | Model ID (default: claude-opus-4-5)     |
+| `MIMI_SECRET_MODEL_PROVIDER`   | `anthropic` or `openai` (default: anthropic) |
+| `MIMI_SECRET_PROXY_HOST`       | HTTP/SOCKS5 proxy hostname/IP (optional)|
+| `MIMI_SECRET_PROXY_PORT`       | Proxy port (optional)                   |
+| `MIMI_SECRET_PROXY_TYPE`       | `http` or `socks5` (optional)           |
+| `MIMI_SECRET_SEARCH_KEY`       | Brave Search API key (optional)         |
+
+**NVS namespaces** (mirroring the build-time defines):
+`wifi_config`, `tg_config`, `llm_config`, `proxy_config`, `search_config`
 
 ---
 
@@ -329,6 +361,26 @@ The loop repeats until `stop_reason` is `"end_turn"` (max 10 iterations).
 
 ---
 
+## Tool Registry
+
+Nine built-in tools are registered at startup in `tools/tool_registry.c`:
+
+| Tool               | Source file          | Description                                            |
+|--------------------|----------------------|--------------------------------------------------------|
+| `web_search`       | `tool_web_search.c`  | Brave Search API (direct or via proxy)                 |
+| `get_current_time` | `tool_get_time.c`    | NTP-synced current date + time, sets system clock      |
+| `read_file`        | `tool_files.c`       | Read a file from SPIFFS (`/spiffs/...`)                |
+| `write_file`       | `tool_files.c`       | Write or overwrite a file on SPIFFS                    |
+| `edit_file`        | `tool_files.c`       | Find-and-replace first occurrence in a SPIFFS file     |
+| `list_dir`         | `tool_files.c`       | List SPIFFS files (optional path prefix filter)        |
+| `cron_add`         | `tool_cron.c`        | Schedule a recurring (`every`) or one-shot (`at`) task |
+| `cron_list`        | `tool_cron.c`        | List all scheduled cron jobs                           |
+| `cron_remove`      | `tool_cron.c`        | Remove a cron job by ID                                |
+
+Each tool is defined as a `mimi_tool_t` struct with a name, description, JSON Schema for inputs, and an `execute` function pointer. Up to 4 tool calls are executed in parallel per ReAct iteration.
+
+---
+
 ## Startup Sequence
 
 ```
@@ -338,23 +390,28 @@ app_main()
   ├── init_spiffs()                 Mount SPIFFS at /spiffs
   ├── message_bus_init()            Create inbound + outbound queues
   ├── memory_store_init()           Verify SPIFFS paths
+  ├── skill_loader_init()           Load built-in skills to SPIFFS, scan /spiffs/skills/
   ├── session_mgr_init()
   ├── wifi_manager_init()           Init WiFi STA mode + event handlers
-  ├── http_proxy_init()             Load proxy config from build-time secrets
-  ├── telegram_bot_init()           Load bot token from build-time secrets
-  ├── llm_proxy_init()              Load API key + model from build-time secrets
-  ├── tool_registry_init()          Register tools, build tools JSON
+  ├── http_proxy_init()             Load proxy config (NVS → build-time fallback)
+  ├── telegram_bot_init()           Load bot token (NVS → build-time fallback)
+  ├── llm_proxy_init()              Load API key + model (NVS → build-time fallback)
+  ├── tool_registry_init()          Register 9 built-in tools, build tools JSON
+  ├── cron_service_init()           Load persisted cron jobs from /spiffs/cron.json
+  ├── heartbeat_init()              Create FreeRTOS timer (30 min interval)
   ├── agent_loop_init()
   ├── serial_cli_init()             Start REPL (works without WiFi)
   │
-  ├── wifi_manager_start()          Connect using build-time credentials
+  ├── wifi_manager_start()          Connect using NVS credentials (fallback to build-time)
   │   └── wifi_manager_wait_connected(30s)
   │
   └── [if WiFi connected]
-      ├── telegram_bot_start()      Launch tg_poll task (Core 0)
+      ├── outbound_dispatch task    Launch outbound task (Core 0) — first to avoid drops
       ├── agent_loop_start()        Launch agent_loop task (Core 1)
-      ├── ws_server_start()         Start httpd on port 18789
-      └── outbound_dispatch task    Launch outbound task (Core 0)
+      ├── telegram_bot_start()      Launch tg_poll task (Core 0)
+      ├── cron_service_start()      Launch cron task (any core, prio 4)
+      ├── heartbeat_start()         Start 30-min FreeRTOS timer
+      └── ws_server_start()         Start httpd on port 18789
 ```
 
 If WiFi credentials are missing or connection times out, the CLI remains available for diagnostics.
@@ -363,18 +420,42 @@ If WiFi credentials are missing or connection times out, the CLI remains availab
 
 ## Serial CLI Commands
 
-The CLI provides debug and maintenance commands only. All configuration is done via `mimi_secrets.h`.
+The CLI provides both runtime configuration and debug/maintenance commands. Configuration set via CLI is saved to NVS and survives reboots; it overrides build-time values until `config_reset` is run.
 
-| Command                        | Description                          |
-|--------------------------------|--------------------------------------|
-| `wifi_status`                  | Show connection status and IP        |
-| `memory_read`                  | Print MEMORY.md contents             |
-| `memory_write <CONTENT>`       | Overwrite MEMORY.md                  |
-| `session_list`                 | List all session files               |
-| `session_clear <CHAT_ID>`      | Delete a session file                |
-| `heap_info`                    | Show internal + PSRAM free bytes     |
-| `restart`                      | Reboot the device                    |
-| `help`                         | List all available commands           |
+**Configuration commands** (saved to NVS):
+
+| Command                              | Description                                         |
+|--------------------------------------|-----------------------------------------------------|
+| `set_wifi <ssid> <password>`         | Set WiFi SSID and password                          |
+| `set_tg_token <token>`              | Set Telegram bot token                              |
+| `set_api_key <key>`                 | Set LLM API key (Anthropic or OpenAI)               |
+| `set_model <model>`                 | Set LLM model identifier                            |
+| `set_model_provider <provider>`     | Set provider: `anthropic` or `openai`               |
+| `set_proxy <host> <port> [type]`    | Set HTTP/SOCKS5 proxy (type: `http` or `socks5`)    |
+| `clear_proxy`                       | Remove proxy configuration                          |
+| `set_search_key <key>`              | Set Brave Search API key                            |
+| `config_show`                       | Show current config (source: NVS or build)          |
+| `config_reset`                      | Wipe all NVS overrides, revert to build-time values |
+
+**Debug and maintenance commands**:
+
+| Command                        | Description                                      |
+|--------------------------------|--------------------------------------------------|
+| `wifi_status`                  | Show connection status and IP                    |
+| `wifi_scan`                    | Scan and list nearby WiFi APs                    |
+| `memory_read`                  | Print MEMORY.md contents                         |
+| `memory_write <content>`       | Overwrite MEMORY.md                              |
+| `session_list`                 | List all session files                           |
+| `session_clear <chat_id>`      | Delete a session file                            |
+| `heap_info`                    | Show internal + PSRAM free bytes                 |
+| `skill_list`                   | List installed skills                            |
+| `skill_show <name>`            | Print full content of a skill file               |
+| `skill_search <keyword>`       | Search skill files by keyword                    |
+| `heartbeat_trigger`            | Manually trigger a heartbeat check               |
+| `cron_start`                   | Start the cron scheduler task                    |
+| `tool_exec <name> [json]`      | Execute a registered tool directly               |
+| `restart`                      | Reboot the device                                |
+| `help`                         | List all available commands                      |
 
 ---
 
@@ -383,16 +464,16 @@ The CLI provides debug and maintenance commands only. All configuration is done 
 | Nanobot Module              | MimiClaw Equivalent            | Notes                        |
 |-----------------------------|--------------------------------|------------------------------|
 | `agent/loop.py`             | `agent/agent_loop.c`           | ReAct loop with tool use     |
-| `agent/context.py`          | `agent/context_builder.c`      | Loads SOUL.md + USER.md + memory + tool guidance |
+| `agent/context.py`          | `agent/context_builder.c`      | Loads SOUL.md + USER.md + memory + skill summaries + tool guidance |
 | `agent/memory.py`           | `memory/memory_store.c`        | MEMORY.md + daily notes      |
 | `session/manager.py`        | `memory/session_mgr.c`         | JSONL per chat, ring buffer  |
 | `channels/telegram.py`      | `telegram/telegram_bot.c`      | Raw HTTP, no python-telegram-bot |
 | `bus/events.py` + `queue.py`| `bus/message_bus.c`            | FreeRTOS queues vs asyncio   |
-| `providers/litellm_provider.py` | `llm/llm_proxy.c`         | Direct Anthropic API only    |
-| `config/schema.py`          | `mimi_config.h` + `mimi_secrets.h` | Build-time secrets only  |
-| `cli/commands.py`           | `cli/serial_cli.c`             | esp_console REPL             |
-| `agent/tools/*`             | `tools/tool_registry.c` + `tool_web_search.c` | web_search via Brave API |
+| `providers/litellm_provider.py` | `llm/llm_proxy.c`         | Anthropic + OpenAI-compatible API |
+| `config/schema.py`          | `mimi_config.h` + `mimi_secrets.h` | Build-time + NVS runtime override |
+| `cli/commands.py`           | `cli/serial_cli.c`             | esp_console REPL, full config + debug commands |
+| `agent/tools/*`             | `tools/tool_registry.c` + `tool_*.c` | 9 built-in tools (web_search, time, file I/O, cron) |
 | `agent/subagent.py`         | *(not yet implemented)*        | See TODO.md                  |
-| `agent/skills.py`           | *(not yet implemented)*        | See TODO.md                  |
-| `cron/service.py`           | *(not yet implemented)*        | See TODO.md                  |
-| `heartbeat/service.py`      | *(not yet implemented)*        | See TODO.md                  |
+| `agent/skills.py`           | `skills/skill_loader.c`        | .md files from /spiffs/skills/, injected into system prompt |
+| `cron/service.py`           | `cron/cron_service.c`          | FreeRTOS task, every/at jobs, persisted to cron.json |
+| `heartbeat/service.py`      | `heartbeat/heartbeat.c`        | FreeRTOS timer, 30-min interval, reads HEARTBEAT.md |
