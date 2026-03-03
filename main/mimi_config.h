@@ -127,3 +127,76 @@
 #define MIMI_NVS_KEY_PROVIDER        "provider"
 #define MIMI_NVS_KEY_PROXY_HOST      "host"
 #define MIMI_NVS_KEY_PROXY_PORT      "port"
+
+/* ================================================================
+ * Peripheral Device Protocol (PDP)
+ * ================================================================ */
+
+/* UART port and GPIO pins for peripheral communication */
+#define MIMI_PERIPH_UART_PORT        UART_NUM_1
+#define MIMI_PERIPH_UART_BAUD        115200
+#define MIMI_PERIPH_UART_TX_PIN      17
+#define MIMI_PERIPH_UART_RX_PIN      18
+#define MIMI_PERIPH_DETECT_PIN       21    /* DET pin: low=disconnected, high=connected */
+
+/* UART buffer and timing */
+#define MIMI_PERIPH_UART_BUF_SIZE    (4 * 1024)
+#define MIMI_PERIPH_HANDSHAKE_TIMEOUT_MS  5000
+#define MIMI_PERIPH_TOOL_TIMEOUT_MS       10000
+
+/* Max peripheral tools (total MAX_TOOLS=32, minus 9 built-ins) */
+#define MIMI_PERIPH_MAX_TOOLS        23
+
+/* SPIFFS paths for peripheral state */
+#define MIMI_PERIPH_DIR              MIMI_SPIFFS_BASE "/peripheral"
+#define MIMI_PERIPH_MANIFEST_FILE    MIMI_PERIPH_DIR "/manifest.json"
+#define MIMI_PERIPH_SKILLS_PREFIX    MIMI_SPIFFS_BASE "/skills/peripheral_"
+
+/* ================================================================
+ * Voice I/O (requires INMP441 mic + MAX98357A speaker hardware)
+ * ================================================================ */
+
+/* I2S port assignment */
+#define MIMI_VOICE_I2S_MIC_PORT      I2S_NUM_0
+#define MIMI_VOICE_I2S_SPK_PORT      I2S_NUM_1
+
+/* Microphone GPIO (INMP441) */
+#define MIMI_VOICE_MIC_WS_PIN        4
+#define MIMI_VOICE_MIC_SCK_PIN       5
+#define MIMI_VOICE_MIC_SD_PIN        6
+
+/* Speaker GPIO (MAX98357A) */
+#define MIMI_VOICE_SPK_BCLK_PIN      15
+#define MIMI_VOICE_SPK_WS_PIN        16
+#define MIMI_VOICE_SPK_DIN_PIN       7
+
+/* Button pin for push-to-talk (BOOT key = GPIO0, or external) */
+#define MIMI_VOICE_BTN_PIN           0
+
+/* Recording parameters */
+#define MIMI_VOICE_SAMPLE_RATE       16000
+#define MIMI_VOICE_REC_BUF_SIZE      (160 * 1024)   /* 10s @ 16kHz 16-bit mono */
+#define MIMI_VOICE_VAD_SILENCE_MS    1500
+#define MIMI_VOICE_MAX_REC_MS        10000
+
+/* STT / TTS provider defaults (NVS key "voice_provider" can override) */
+#define MIMI_VOICE_STT_PROVIDER      "dashscope"     /* dashscope | openai */
+#define MIMI_VOICE_TTS_PROVIDER      "dashscope"
+#define MIMI_VOICE_STT_MODEL         "paraformer-realtime-v2"
+#define MIMI_VOICE_TTS_MODEL         "cosyvoice-v1"
+#define MIMI_VOICE_TTS_VOICE_ID      "longxiaochun"
+
+/* Voice task stacks */
+#define MIMI_VOICE_INPUT_STACK       (8 * 1024)
+#define MIMI_VOICE_OUTPUT_STACK      (8 * 1024)
+#define MIMI_VOICE_INPUT_PRIO        4
+#define MIMI_VOICE_OUTPUT_PRIO       4
+
+/* Voice channel name */
+#define MIMI_CHAN_VOICE               "voice"
+
+/* NVS namespace for voice config */
+#define MIMI_NVS_VOICE               "voice_config"
+#define MIMI_NVS_KEY_VOICE_PROVIDER  "provider"
+#define MIMI_NVS_KEY_VOICE_KEY       "api_key"
+#define MIMI_NVS_KEY_VOICE_MODEL     "model"

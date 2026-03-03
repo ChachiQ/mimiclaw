@@ -11,20 +11,22 @@
 
 static const char *TAG = "tools";
 
-#define MAX_TOOLS 12
+#define MAX_TOOLS 32
 
 static mimi_tool_t s_tools[MAX_TOOLS];
 static int s_tool_count = 0;
-static char *s_tools_json = NULL;  /* cached JSON array string */
+static char *s_tools_json = NULL;       /* cached JSON array string */
+static const char *s_current_tool_name = NULL; /* set during execute dispatch */
 
-static void register_tool(const mimi_tool_t *tool)
+static void register_builtin(const mimi_tool_t *tool)
 {
     if (s_tool_count >= MAX_TOOLS) {
         ESP_LOGE(TAG, "Tool registry full");
         return;
     }
     s_tools[s_tool_count++] = *tool;
-    ESP_LOGI(TAG, "Registered tool: %s", tool->name);
+    s_tools[s_tool_count - 1].is_dynamic = false;
+    ESP_LOGI(TAG, "Registered built-in tool: %s", tool->name);
 }
 
 static void build_tools_json(void)
@@ -67,7 +69,7 @@ esp_err_t tool_registry_init(void)
             "\"required\":[\"query\"]}",
         .execute = tool_web_search_execute,
     };
-    register_tool(&ws);
+    register_builtin(&ws);
 
     /* Register get_current_time */
     mimi_tool_t gt = {
@@ -79,7 +81,7 @@ esp_err_t tool_registry_init(void)
             "\"required\":[]}",
         .execute = tool_get_time_execute,
     };
-    register_tool(&gt);
+    register_builtin(&gt);
 
     /* Register read_file */
     mimi_tool_t rf = {
@@ -91,7 +93,7 @@ esp_err_t tool_registry_init(void)
             "\"required\":[\"path\"]}",
         .execute = tool_read_file_execute,
     };
-    register_tool(&rf);
+    register_builtin(&rf);
 
     /* Register write_file */
     mimi_tool_t wf = {
@@ -104,7 +106,7 @@ esp_err_t tool_registry_init(void)
             "\"required\":[\"path\",\"content\"]}",
         .execute = tool_write_file_execute,
     };
-    register_tool(&wf);
+    register_builtin(&wf);
 
     /* Register edit_file */
     mimi_tool_t ef = {
@@ -118,7 +120,7 @@ esp_err_t tool_registry_init(void)
             "\"required\":[\"path\",\"old_string\",\"new_string\"]}",
         .execute = tool_edit_file_execute,
     };
-    register_tool(&ef);
+    register_builtin(&ef);
 
     /* Register list_dir */
     mimi_tool_t ld = {
@@ -130,7 +132,7 @@ esp_err_t tool_registry_init(void)
             "\"required\":[]}",
         .execute = tool_list_dir_execute,
     };
-    register_tool(&ld);
+    register_builtin(&ld);
 
     /* Register cron_add */
     mimi_tool_t ca = {
@@ -150,7 +152,7 @@ esp_err_t tool_registry_init(void)
             "\"required\":[\"name\",\"schedule_type\",\"message\"]}",
         .execute = tool_cron_add_execute,
     };
-    register_tool(&ca);
+    register_builtin(&ca);
 
     /* Register cron_list */
     mimi_tool_t cl = {
@@ -162,7 +164,7 @@ esp_err_t tool_registry_init(void)
             "\"required\":[]}",
         .execute = tool_cron_list_execute,
     };
-    register_tool(&cl);
+    register_builtin(&cl);
 
     /* Register cron_remove */
     mimi_tool_t cr = {
@@ -174,11 +176,11 @@ esp_err_t tool_registry_init(void)
             "\"required\":[\"job_id\"]}",
         .execute = tool_cron_remove_execute,
     };
-    register_tool(&cr);
+    register_builtin(&cr);
 
     build_tools_json();
 
-    ESP_LOGI(TAG, "Tool registry initialized");
+    ESP_LOGI(TAG, "Tool registry initialized (%d built-in tools)", s_tool_count);
     return ESP_OK;
 }
 
@@ -193,11 +195,50 @@ esp_err_t tool_registry_execute(const char *name, const char *input_json,
     for (int i = 0; i < s_tool_count; i++) {
         if (strcmp(s_tools[i].name, name) == 0) {
             ESP_LOGI(TAG, "Executing tool: %s", name);
-            return s_tools[i].execute(input_json, output, output_size);
+            s_current_tool_name = s_tools[i].name;
+            esp_err_t ret = s_tools[i].execute(input_json, output, output_size);
+            s_current_tool_name = NULL;
+            return ret;
         }
     }
 
     ESP_LOGW(TAG, "Unknown tool: %s", name);
     snprintf(output, output_size, "Error: unknown tool '%s'", name);
     return ESP_ERR_NOT_FOUND;
+}
+
+esp_err_t tool_registry_register_dynamic(const mimi_tool_t *tool)
+{
+    if (s_tool_count >= MAX_TOOLS) {
+        ESP_LOGE(TAG, "Tool registry full, cannot register dynamic tool: %s", tool->name);
+        return ESP_ERR_NO_MEM;
+    }
+    s_tools[s_tool_count] = *tool;
+    s_tools[s_tool_count].is_dynamic = true;
+    s_tool_count++;
+    ESP_LOGI(TAG, "Registered dynamic tool: %s", tool->name);
+    return ESP_OK;
+}
+
+void tool_registry_unregister_peripheral_tools(void)
+{
+    int write = 0;
+    for (int i = 0; i < s_tool_count; i++) {
+        if (!s_tools[i].is_dynamic) {
+            s_tools[write++] = s_tools[i];
+        } else {
+            ESP_LOGI(TAG, "Unregistered dynamic tool: %s", s_tools[i].name);
+        }
+    }
+    s_tool_count = write;
+}
+
+void tool_registry_rebuild_json(void)
+{
+    build_tools_json();
+}
+
+const char *tool_registry_get_current_tool_name(void)
+{
+    return s_current_tool_name;
 }

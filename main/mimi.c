@@ -24,6 +24,12 @@
 #include "cron/cron_service.h"
 #include "heartbeat/heartbeat.h"
 #include "skills/skill_loader.h"
+#include "peripheral/peripheral_uart.h"
+#include "peripheral/peripheral_detector.h"
+#include "peripheral/peripheral_manager.h"
+#include "voice/voice_input.h"
+#include "voice/voice_output.h"
+#include "voice/voice_channel.h"
 
 static const char *TAG = "mimi";
 
@@ -60,6 +66,16 @@ static esp_err_t init_spiffs(void)
     return ESP_OK;
 }
 
+/* Peripheral detect callback — called from FreeRTOS timer task (debounced) */
+static void on_peripheral_state_change(bool connected)
+{
+    if (connected) {
+        peripheral_manager_on_connect();
+    } else {
+        peripheral_manager_on_disconnect();
+    }
+}
+
 /* Outbound dispatch task: reads from outbound queue and routes to channels */
 static void outbound_dispatch_task(void *arg)
 {
@@ -82,6 +98,12 @@ static void outbound_dispatch_task(void *arg)
             esp_err_t ws_err = ws_server_send(msg.chat_id, msg.content);
             if (ws_err != ESP_OK) {
                 ESP_LOGW(TAG, "WS send failed for %s: %s", msg.chat_id, esp_err_to_name(ws_err));
+            }
+        } else if (strcmp(msg.channel, MIMI_CHAN_VOICE) == 0) {
+            /* Voice response: synthesize and play via TTS */
+            esp_err_t v_err = voice_output_play(msg.content);
+            if (v_err != ESP_OK) {
+                ESP_LOGW(TAG, "Voice output failed: %s", esp_err_to_name(v_err));
             }
         } else if (strcmp(msg.channel, MIMI_CHAN_SYSTEM) == 0) {
             ESP_LOGI(TAG, "System message [%s]: %.128s", msg.chat_id, msg.content);
@@ -127,6 +149,49 @@ void app_main(void)
     ESP_ERROR_CHECK(heartbeat_init());
     ESP_ERROR_CHECK(agent_loop_init());
 
+    /* Phase 2: Peripheral subsystem (non-fatal — Layer 1 runs without peripheral) */
+    {
+        esp_err_t p_err = peripheral_manager_init();
+        if (p_err == ESP_OK) {
+            p_err = peripheral_uart_init();
+            if (p_err == ESP_OK) {
+                p_err = peripheral_detector_init(on_peripheral_state_change);
+                if (p_err != ESP_OK) {
+                    ESP_LOGW(TAG, "Peripheral detector init failed: %s (continuing without peripheral)",
+                             esp_err_to_name(p_err));
+                }
+                /* If a peripheral was already connected at boot, trigger handshake */
+                if (peripheral_detector_is_connected()) {
+                    ESP_LOGI(TAG, "Peripheral detected at boot — running handshake");
+                    peripheral_manager_on_connect();
+                }
+            } else {
+                ESP_LOGW(TAG, "Peripheral UART init failed: %s (continuing without peripheral)",
+                         esp_err_to_name(p_err));
+            }
+        } else {
+            ESP_LOGW(TAG, "Peripheral manager init failed: %s", esp_err_to_name(p_err));
+        }
+    }
+
+    /* Phase 3: Voice subsystem (non-fatal — requires physical mic + speaker hardware) */
+    {
+        bool voice_ok = true;
+
+        if (voice_input_init() != ESP_OK) {
+            ESP_LOGW(TAG, "Voice input init failed — no microphone hardware?");
+            voice_ok = false;
+        }
+        if (voice_output_init() != ESP_OK) {
+            ESP_LOGW(TAG, "Voice output init failed — no speaker hardware?");
+            voice_ok = false;
+        }
+        if (voice_ok) {
+            voice_channel_init();
+            /* voice tasks start after WiFi is up (STT/TTS need network) */
+        }
+    }
+
     /* Start Serial CLI first (works without WiFi) */
     ESP_ERROR_CHECK(serial_cli_init());
 
@@ -152,6 +217,11 @@ void app_main(void)
             cron_service_start();
             heartbeat_start();
             ESP_ERROR_CHECK(ws_server_start());
+
+            /* Start voice channel tasks (needs WiFi for STT/TTS APIs) */
+            if (voice_input_start() != ESP_OK || voice_output_start() != ESP_OK) {
+                ESP_LOGW(TAG, "Voice channel start failed (no hardware)");
+            }
 
             ESP_LOGI(TAG, "All services started!");
         } else {

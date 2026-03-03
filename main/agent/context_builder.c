@@ -9,6 +9,9 @@
 
 static const char *TAG = "context";
 
+/* Peripheral info buffer — set by peripheral_manager on connect/disconnect */
+static char s_peripheral_info[256];
+
 static size_t append_file(char *buf, size_t size, size_t offset, const char *path, const char *header)
 {
     FILE *f = fopen(path, "r");
@@ -23,6 +26,20 @@ static size_t append_file(char *buf, size_t size, size_t offset, const char *pat
     buf[offset] = '\0';
     fclose(f);
     return offset;
+}
+
+void context_builder_set_peripheral_info(const char *info)
+{
+    if (info && info[0]) {
+        snprintf(s_peripheral_info, sizeof(s_peripheral_info), "%s", info);
+    } else {
+        s_peripheral_info[0] = '\0';
+    }
+}
+
+void context_builder_clear_peripheral_info(void)
+{
+    s_peripheral_info[0] = '\0';
 }
 
 esp_err_t context_build_system_prompt(char *buf, size_t size)
@@ -89,6 +106,11 @@ esp_err_t context_build_system_prompt(char *buf, size_t size)
             "\n## Available Skills\n\n"
             "Available skills (use read_file to load full instructions):\n%s\n",
             skills_buf);
+    }
+
+    /* Connected peripheral (injected by peripheral_manager when device is connected) */
+    if (s_peripheral_info[0]) {
+        off += snprintf(buf + off, size - off, "\n%s\n", s_peripheral_info);
     }
 
     ESP_LOGI(TAG, "System prompt built: %d bytes", (int)off);
