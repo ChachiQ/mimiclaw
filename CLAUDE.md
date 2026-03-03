@@ -12,13 +12,23 @@ When working in this repository, operate as a **C/C++ embedded-systems expert** 
 
 ## Project Overview
 
-MimiClaw is an embedded AI assistant firmware for the ESP32-S3 microcontroller (~$5). It is written entirely in C (no Linux, no Node.js) and runs on FreeRTOS. It connects via Telegram or WebSocket, runs a ReAct agent loop against Claude or GPT, executes tools (web search, cron, file I/O), and persists memory on SPIFFS flash storage.
+MimiClaw is a **pluggable AI Brain Box** firmware for the ESP32-S3 microcontroller (~$5). Written entirely in C (no Linux, no Node.js) on FreeRTOS, it implements a three-layer modular architecture:
+
+- **Layer 1 (Brain Core)**: ReAct LLM agent, Telegram, WebSocket, 9 built-in tools, SPIFFS memory, Cron, Heartbeat — always runs independently
+- **Layer 2 (Voice, optional)**: I2S INMP441 mic + MAX98357A speaker, DashScope STT/TTS — compile-time enable/disable, non-fatal init
+- **Layer 3 (Peripheral, hot-plug)**: Any MCU connects via UART1 (GPIO17/18), declares tools via PDP v1 protocol, gets auto-registered as LLM tools — non-fatal hot-plug
+
+**Invariant: Layer 1 never depends on Layer 2 or Layer 3.**
 
 ## Project Lineage
 
-MimiClaw is a **minimal ESP32-S3 port of the openClaw project**. openClaw defines the "claw-style" AI agent architecture: a ReAct loop with a tool registry, persistent memory files, and a message-bus that decouples input channels from the agent core. MimiClaw preserves this architecture but strips it down to fit on a $5 microcontroller — no Linux, no Node.js, pure C on FreeRTOS.
+MimiClaw started as a minimal ESP32-S3 port of the openClaw project (claw-style ReAct agent with tool registry, SPIFFS memory, message bus). It has since evolved its own identity around the **three-layer independent model**:
 
-When making architectural decisions, follow openClaw's design philosophy: clean module boundaries, registry-driven extensibility (tools, skills), and plain-text SPIFFS files as the persistence layer.
+- Layer 1 independence: the brain core must work without any peripheral or voice hardware
+- Peripheral hot-swap: connect/disconnect any UART peripheral with zero impact on brain operation
+- Voice as optional upgrade: compile out entirely when hardware is absent
+
+When making architectural decisions, apply MimiClaw's design principles: layer independence, graceful degradation, human-readable SPIFFS storage, and registry-driven extensibility.
 
 ## Build Commands
 
@@ -95,13 +105,33 @@ All state is stored as plain text on a 12 MB SPIFFS partition:
 | Heartbeat | `main/heartbeat/` | Autonomous agent triggers via HEARTBEAT.md |
 | Skills | `main/skills/` | Pluggable skill loader from SPIFFS |
 | OTA | `main/ota/` | Firmware updates over WiFi |
+| Peripheral | `main/peripheral/` | PDP v1 hot-plug: UART1 driver, GPIO21 detector, protocol, manager |
+| Voice | `main/voice/` | I2S mic (STT) + speaker (TTS), state machine, DashScope APIs |
+
+### Three-Layer Model
+
+| Layer | Description | Non-fatal? |
+|-------|-------------|------------|
+| Layer 1: Brain Core | LLM agent, tools, memory, Telegram, WebSocket | N/A (always runs) |
+| Layer 2: Voice | I2S mic/speaker, STT/TTS | Yes — brain continues without it |
+| Layer 3: Peripheral | UART hot-plug, PDP v1, dynamic tools | Yes — brain continues without it |
+
+### Tool Registry Dynamic API
+
+`tool_registry_register_dynamic(name, desc, schema, fn)` — registers a tool at runtime (used by peripheral subsystem).
+`unregister_peripheral_tools()` — removes all peripheral-registered tools.
+`rebuild_json()` — rebuilds the tools JSON array sent to LLM (call after any dynamic register/unregister).
+
+Universal peripheral tool stub: `tools/tool_peripheral.c/h` — all peripheral tools share one execute function that sends UART RPC to the peripheral and waits for response.
 
 ## Key Constraints
 
 - **Pure C, ESP-IDF only** — no external libraries beyond ESP-IDF components
 - **PSRAM required** — large buffers (HTTP response, cJSON trees) use `heap_caps_malloc(MALLOC_CAP_SPIRAM)`
 - **No heap fragmentation** — avoid frequent small allocs/frees in the agent loop
-- **Single CMake component** — all 22 source files registered in `main/CMakeLists.txt`
+- **Single CMake component** — all 27+ source files registered in `main/CMakeLists.txt`
+- **Layer 1 independence** — agent_loop, telegram, websocket must never import peripheral/ or voice/ headers
+- **minimp3 exception** — single-header library in main/ for MP3 decode; only approved external header outside ESP-IDF
 
 ## Commit Style
 

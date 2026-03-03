@@ -1,4 +1,4 @@
-# MimiClaw: $5 芯片上的口袋 AI 助理
+# MimiClaw: 可插拔 AI 大脑盒子
 
 <p align="center">
   <img src="assets/banner.png" alt="MimiClaw" width="500" />
@@ -15,23 +15,42 @@
   <strong><a href="README.md">English</a> | <a href="README_CN.md">中文</a> | <a href="README_JA.md">日本語</a></strong>
 </p>
 
-**$5 芯片上的 AI 助理（OpenClaw）。没有 Linux，没有 Node.js，纯 C。**
+**ESP32-S3 + MimiClaw = 可插拔 AI 大脑盒子。上电即是完整 AI 助理，插上外设 LLM 自动驱动它。**
 
-MimiClaw 把一块小小的 ESP32-S3 开发板变成你的私人 AI 助理。插上 USB 供电，连上 WiFi，通过 Telegram 跟它对话 — 它能处理你丢给它的任何任务，还会随时间积累本地记忆不断进化 — 全部跑在一颗拇指大小的芯片上。
+MimiClaw 是一个模块化 AI 智能体固件，运行在 ESP32-S3 上。核心是一个 24/7 运行的 ReAct LLM 智能体 — 没有 Linux，没有 Node.js，纯 C + FreeRTOS，跑在一颗 $5 的芯片上。接上麦克风和喇叭即可语音交互，通过 UART 连接任意 MCU 后 AI 立即获得驱动它的新工具。
 
-## 认识 MimiClaw
+## 三层架构
 
-- **小巧** — 没有 Linux，没有 Node.js，没有臃肿依赖 — 纯 C
-- **好用** — 在 Telegram 发消息，剩下的它来搞定
-- **忠诚** — 从记忆中学习，跨重启也不会忘
-- **能干** — USB 供电，0.5W，24/7 运行
-- **可爱** — 一块 ESP32-S3 开发板，$5，没了
+```
+┌─────────────────────────────────────────────────────┐
+│  第三层：外设能力（热插拔，可选）                         │
+│  插入机械臂 → +arm_move / +arm_gripper               │
+│  插入机器狗 → +walk / +turn / +grip                  │
+├─────────────────────────────────────────────────────┤
+│  第二层：语音 I/O（编译开关，可选）                        │
+│  有麦克风+喇叭 → 语音输入/输出                           │
+│  无硬件 → 仅 Telegram / WebSocket                    │
+├─────────────────────────────────────────────────────┤
+│  第一层：大脑核心（始终独立运行）                           │
+│  LLM 智能体 + 工具 + 记忆 + Telegram + WebSocket      │
+└─────────────────────────────────────────────────────┘
+```
+
+**关键不变量：第一层永远不依赖第二层或第三层。拔掉外设 — Telegram 照常工作。关闭语音 — 其余一切照常。**
+
+## MimiClaw 能做什么
+
+- **大脑核心（始终运行）** — ReAct LLM 智能体循环、9 个内置工具、持久化 SPIFFS 记忆、Telegram 轮询、WebSocket 网关、Cron 调度器、心跳服务
+- **语音 I/O（可选）** — I2S INMP441 麦克风 + MAX98357A 喇叭，DashScope STT/TTS，通过编译开关启用；初始化失败不影响整体运行
+- **外设热插拔（可选）** — 任意 MCU 通过 UART1（GPIO17/18）接入，发送 Manifest JSON 声明能力，能力自动通过 PDP v1 协议注册为 LLM 工具
+- **小巧自洽** — 没有 Linux，没有 Node.js，没有臃肿依赖 — 纯 C 跑在 $5 芯片上
+- **双提供商** — 同时支持 Anthropic (Claude) 和 OpenAI (GPT)，运行时可切换
 
 ## 工作原理
 
 ![](assets/mimiclaw.png)
 
-你在 Telegram 发一条消息，ESP32-S3 通过 WiFi 收到后送进 Agent 循环 — LLM 思考、调用工具、读取记忆 — 再把回复发回来。同时支持 **Anthropic (Claude)** 和 **OpenAI (GPT)** 两种提供商，运行时可切换。一切都跑在一颗 $5 的芯片上，所有数据存在本地 Flash。
+消息通过 Telegram 或 WebSocket 到达，ESP32-S3 在 Core 0 上接收后推入 inbound 队列，Core 1 上的 ReAct 智能体循环接管 — LLM 思考、调用工具、读取记忆 — 再把回复发回去。如果外设已连接，其工具与内置工具一起对 LLM 可用。如果语音已启用，语音输入会先转录再进入循环，回复也会合成为语音输出。一切都跑在一颗芯片上，所有数据存储在本地 Flash。
 
 ## 快速开始
 
@@ -263,12 +282,16 @@ MimiClaw 把所有数据存为纯文本文件，可以直接读取和编辑：
 
 ## 工具
 
-MimiClaw 同时支持 Anthropic 和 OpenAI 的工具调用 — LLM 在对话中可以调用工具，循环执行直到任务完成（ReAct 模式）。
+MimiClaw 同时支持 Anthropic 和 OpenAI 的工具调用 — LLM 在对话中可以调用工具，循环执行直到任务完成（ReAct 模式）。外设工具在外设连接时动态注册。
 
 | 工具 | 说明 |
 |------|------|
 | `web_search` | 通过 Brave Search API 搜索网页，获取实时信息 |
 | `get_current_time` | 通过 HTTP 获取当前日期和时间，并设置系统时钟 |
+| `read_file` | 从 SPIFFS Flash 读取文件 |
+| `write_file` | 向 SPIFFS Flash 写入文件 |
+| `edit_file` | 编辑 SPIFFS Flash 上的已有文件 |
+| `list_dir` | 列出 SPIFFS 目录下的文件 |
 | `cron_add` | 创建定时或一次性任务（LLM 自主创建 cron 任务） |
 | `cron_list` | 列出所有已调度的 cron 任务 |
 | `cron_remove` | 按 ID 删除 cron 任务 |
@@ -297,12 +320,16 @@ MimiClaw 内置 cron 调度器，让 AI 可以自主安排任务。LLM 可以通
 - **定时任务** — AI 可自主创建周期性和一次性任务，重启后持久保存
 - **心跳服务** — 定期检查任务文件，驱动 AI 自主执行
 - **工具调用** — ReAct Agent 循环，两种提供商均支持工具调用
+- **语音 I/O（第二层）** — 可选 I2S 麦克风（INMP441）和喇叭（MAX98357A），DashScope STT/TTS；通过编译开关启用，硬件缺失时非致命
+- **外设热插拔（第三层）** — 通过 UART1 连接任意 MCU；外设通过 Manifest JSON 和 Skill .md 文件声明能力，自动注册为 LLM 可调用工具（PDP v1 协议）；断开连接后工具干净卸载
 
 ## 开发者
 
 技术细节在 `docs/` 文件夹：
 
 - **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** — 系统设计、模块划分、任务布局、内存分配、协议、Flash 分区
+- **[docs/VISION.md](docs/VISION.md)** — 项目愿景与长期设计哲学
+- **[docs/PERIPHERAL_DESIGN.md](docs/PERIPHERAL_DESIGN.md)** — PDP v1 协议规范、外设 Manifest 格式、工具注册生命周期
 - **[docs/TODO.md](docs/TODO.md)** — 功能差距和路线图
 
 ## 贡献

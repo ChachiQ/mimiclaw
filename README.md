@@ -1,4 +1,4 @@
-# MimiClaw: Pocket AI Assistant on a $5 Chip
+# MimiClaw: Pluggable AI Brain Box
 
 <p align="center">
   <img src="assets/banner.png" alt="MimiClaw" width="500" />
@@ -15,23 +15,42 @@
   <strong><a href="README.md">English</a> | <a href="README_CN.md">中文</a> | <a href="README_JA.md">日本語</a></strong>
 </p>
 
-**The world's first AI assistant(OpenClaw) on a $5 chip. No Linux. No Node.js. Just pure C**
+**ESP32-S3 + MimiClaw = pluggable AI brain box. Power on for a complete AI assistant. Plug in a peripheral and the LLM automatically drives it.**
 
-MimiClaw turns a tiny ESP32-S3 board into a personal AI assistant. Plug it into USB power, connect to WiFi, and talk to it through Telegram — it handles any task you throw at it and evolves over time with local memory — all on a chip the size of a thumb.
+MimiClaw is a modular AI agent firmware for the ESP32-S3. At its core is a ReAct LLM agent that runs 24/7 on a $5 chip — no Linux, no Node.js, pure C on FreeRTOS. Snap on a mic and speaker for voice I/O, or connect any MCU via UART and the AI instantly gains new tools to control it.
 
-## Meet MimiClaw
+## Three-Layer Architecture
 
-- **Tiny** — No Linux, no Node.js, no bloat — just pure C
-- **Handy** — Message it from Telegram, it handles the rest
-- **Loyal** — Learns from memory, remembers across reboots
-- **Energetic** — USB power, 0.5 W, runs 24/7
-- **Lovable** — One ESP32-S3 board, $5, nothing else
+```
+┌─────────────────────────────────────────────────────┐
+│  Layer 3: Peripheral Capability (hot-plug, optional)│
+│  Plug in robotic arm → +arm_move / +arm_gripper     │
+│  Plug in robot dog   → +walk / +turn / +grip        │
+├─────────────────────────────────────────────────────┤
+│  Layer 2: Voice I/O (compile flag, optional)        │
+│  With mic+speaker → voice input/output              │
+│  Without hardware → Telegram / WebSocket only       │
+├─────────────────────────────────────────────────────┤
+│  Layer 1: Brain Core (always runs independently)    │
+│  LLM Agent + Tools + Memory + Telegram + WebSocket  │
+└─────────────────────────────────────────────────────┘
+```
+
+**Key invariant: Layer 1 never depends on Layer 2 or Layer 3. Unplug a peripheral — Telegram still works. Disable voice — everything else still works.**
+
+## What MimiClaw Does
+
+- **Brain Core (always on)** — ReAct LLM agent loop, 9 built-in tools, persistent SPIFFS memory, Telegram polling, WebSocket gateway, Cron scheduler, Heartbeat service
+- **Voice I/O (optional)** — I2S INMP441 microphone + MAX98357A speaker, DashScope STT/TTS, enabled via compile switch; failures are non-fatal
+- **Peripheral hot-plug (optional)** — any MCU connects via UART1 (GPIO17/18), sends a Manifest JSON declaring its capabilities, and those capabilities auto-register as LLM tools via PDP v1 protocol
+- **Tiny and self-contained** — no Linux, no Node.js, no bloat — pure C on a $5 chip
+- **Dual-provider** — supports both Anthropic (Claude) and OpenAI (GPT), switchable at runtime
 
 ## How It Works
 
 ![](assets/mimiclaw.png)
 
-You send a message on Telegram. The ESP32-S3 picks it up over WiFi, feeds it into an agent loop — the LLM thinks, calls tools, reads memory — and sends the reply back. Supports both **Anthropic (Claude)** and **OpenAI (GPT)** as providers, switchable at runtime. Everything runs on a single $5 chip with all your data stored locally on flash.
+A message arrives via Telegram or WebSocket. The ESP32-S3 picks it up on Core 0, pushes it onto the inbound queue, and the ReAct agent loop on Core 1 takes over — the LLM thinks, calls tools, reads memory — then the reply goes back out. If a peripheral is connected, its tools are available to the LLM alongside built-in ones. If voice is enabled, speech input is transcribed before entering the loop and the reply is synthesized to audio. Everything runs on a single chip with all data stored locally on flash.
 
 ## Quick Start
 
@@ -248,12 +267,16 @@ MimiClaw stores everything as plain text files you can read and edit:
 
 ## Tools
 
-MimiClaw supports tool calling for both Anthropic and OpenAI — the LLM can call tools during a conversation and loop until the task is done (ReAct pattern).
+MimiClaw supports tool calling for both Anthropic and OpenAI — the LLM can call tools during a conversation and loop until the task is done (ReAct pattern). Peripheral tools are dynamically registered when a peripheral connects.
 
 | Tool | Description |
 |------|-------------|
 | `web_search` | Search the web via Brave Search API for current information |
 | `get_current_time` | Fetch current date/time via HTTP and set the system clock |
+| `read_file` | Read a file from SPIFFS flash storage |
+| `write_file` | Write a file to SPIFFS flash storage |
+| `edit_file` | Edit an existing file on SPIFFS flash storage |
+| `list_dir` | List files in a SPIFFS directory |
 | `cron_add` | Schedule a recurring or one-shot task (the LLM creates cron jobs on its own) |
 | `cron_list` | List all scheduled cron jobs |
 | `cron_remove` | Remove a cron job by ID |
@@ -282,12 +305,16 @@ This turns MimiClaw into a proactive assistant — write tasks to `HEARTBEAT.md`
 - **Cron scheduler** — the AI can schedule its own recurring and one-shot tasks, persisted across reboots
 - **Heartbeat** — periodically checks a task file and prompts the AI to act autonomously
 - **Tool use** — ReAct agent loop with tool calling for both providers
+- **Voice I/O (Layer 2)** — optional I2S microphone (INMP441) and speaker (MAX98357A) with DashScope STT/TTS; enabled via compile flag, non-fatal if hardware is absent
+- **Peripheral hot-plug (Layer 3)** — connect any MCU via UART1; it declares its capabilities via Manifest JSON and Skill .md files, which auto-register as LLM-callable tools via PDP v1 protocol; disconnect and the tools unregister cleanly
 
 ## For Developers
 
 Technical details live in the `docs/` folder:
 
 - **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** — system design, module map, task layout, memory budget, protocols, flash partitions
+- **[docs/VISION.md](docs/VISION.md)** — project vision and long-term design philosophy
+- **[docs/PERIPHERAL_DESIGN.md](docs/PERIPHERAL_DESIGN.md)** — PDP v1 protocol spec, peripheral manifest format, tool registration lifecycle
 - **[docs/TODO.md](docs/TODO.md)** — feature gap tracker and roadmap
 
 ## Contributing
